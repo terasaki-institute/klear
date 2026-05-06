@@ -1,71 +1,106 @@
-#@@@ Dependencies
+# A Hybrid Tree-Neural Framework for Pre-Transplant Risk Stratification of Acute Kidney Allograft Rejection Incorporating Unique High-Resolution Molecular Histocompatibility Dataset
 
-#++ OS tested: Mac OS and Windows
+Accompanying code for the NeurIPS submission.
 
-#++ Packages/Modules dependencies are listed in the scripts.
+The method combines XGBoost (tabular features and leaf indices), a PyTorch DNN, VAE + GMM oversampling for class imbalance, and focal loss. Supported outcomes include antibody-mediated rejection (ABMR), T-cell–mediated rejection (TCMR), pooled rejection, and multi-class Banff grades; see `train.py` for details.
 
-#++ Typical install time: <30 minutes
+---
 
-#@@@ Scripts
+## Contents
 
-#+++ KLEAR_development.py		
-Python script for training/testing KLEAR(XGBoost+DNN) models for ABMR and TCMR prediction
+| Item | Description |
+|------|-------------|
+| `train.py` | Train and evaluate models (Optuna tuning, CV, metrics and plots). |
+| `predict.py` | Run inference on new data using a saved model directory. |
+| `evaluate_figures.py` | Extended evaluation: ROC/PR curves, confusion matrices, bootstrap metrics, decision curves, summary spreadsheet. |
+| `sample_dataset.csv` | Example input table. |
+| `ABMR_sample_output.csv` / `TCMR_sample_output.csv` | Example risk-score outputs. |
 
-#+++ KLEAR_evaluation.py		
-Python script for additional evaluation of model performance
+---
 
-#+++ KLEAR_run.py
-Python script to generate ABMR and TCMR prediction
+## Dependencies
 
-#@@@ Sample datasets
+- **OS:** Tested on macOS and Windows.
+- **Python packages:** See imports in each script. Core stack includes PyTorch, XGBoost, scikit-learn, pandas, NumPy, Optuna, `category_encoders`, and joblib. `evaluate_figures.py` additionally uses seaborn, matplotlib, `dcurves`, and writes Excel via `pandas` (requires a suitable engine such as `openpyxl`).
+- **Typical setup time:** Under ~30 minutes (environment + installs).
 
-#+++ KLEAR_sample_dataset.csv
-Sample input for KLEAR
+---
 
-#+++ KLEAR_ABMR_sample_output.csv
-Sample output from KLEAR for ABMR prediction
+## Sample data
 
-#+++ KLEAR_TCMR_sample_output.csv
-Sample output from KLEAR for TCMR prediction
+- `sample_dataset.csv` — example features/outcomes for running the pipeline.
+- `ABMR_sample_output.csv` / `TCMR_sample_output.csv` — example predicted risk scores (probability of the positive class), in the range 0 (low risk) to 1 (high risk).
 
-#+++ KLEAR_ABMR_test_model_performance
-Key model evaluation output for ABMR prediction
+---
 
-#+++ KLEAR_TCMR_test_model_performance
-Key model evaluation output for TCMR predition
+## Usage
 
-#@@@ Demo/Usage instructions
+**Expected inference runtime:** on the order of seconds for small cohorts (e.g. &lt;30 s for typical sample sizes).
 
-#+++ Expected output: risk scores (probability) ranging from 0 (low risk) to 1 (high risk)
+Optional flags are supported by the scripts (for example `--output` and `--trials` on `train.py`, `--output_dir` and `--type` on `predict.py`); the commands below match the original README invocations, using defaults where arguments are omitted.
 
-#+++ Expected runtime: <30 seconds
+### Train and develop models
 
-#+++ Development of KLEAR models
+`--train_set` and `--test_set` each accept one or more CSV paths; paired lists must be the same length. By default, runs write under `results/` with subfolders derived from the train file path and outcome (see `train.py`).
 
-### ABMR prediction
-python KLEAR_development.py --outcome_type outcome_abmr --train_set ./train.csv --test_set ./test_data.csv
-#output directory: ./outcome_abmr
+#### ABMR prediction
 
-### TCMR prediction 
-python KLEAR_development.py --outcome_type outcome_tcmr --train_set ./train.csv --test_set ./test_data.csv
-#output directory: ./outcome_tcmr
+```bash
+python train.py \
+  --outcome_type outcome_abmr \
+  --train_set ./train.csv \
+  --test_set ./test_data.csv
+```
 
-#+++ Additional evaluation of KLEAR models
+#### TCMR prediction
 
-### ABMR prediction
-python KLEAR_evaluation.py --outcome_col outcome_abmr --model_dir ./model_directory --test_paths ./test_data.csv
-#output directory: ./outcome_abmr
+```bash
+python train.py \
+  --outcome_type outcome_tcmr \
+  --train_set ./train.csv \
+  --test_set ./test_data.csv
+```
 
-### TCMR prediction
-python KLEAR_evaluation.py --outcome_col outcome_tcmr --model_dir ./model_directory --test_paths ./test_data.csv 
-#output directory: ./outcome_tcmr
+Other valid `--outcome_type` values: `outcome_rej`, `outcome_banff` (see `train.py` docstring).
 
-#+++ Prediction using KLEAR
+### Additional evaluation
 
-### ABMR prediction
-python KLEAR_run.py --outcome_col outcome_abmr --model_dir ./model_directory --test_paths ./sample_data.csv
-#output directory: ./outcome_abmr
+#### ABMR prediction
 
-### TCMR prediction 
-python KLEAR_run.py --outcome_col outcome_tcmr --model_dir ./model_directory --test_paths ./sample_data.csv 
-#output directory: ./outcome_tcmr
+```bash
+python evaluate_figures.py \
+  --outcome_col outcome_abmr \
+  --model_dir ./model_directory \
+  --test_paths ./test_data.csv
+```
+
+#### TCMR prediction
+
+```bash
+python evaluate_figures.py \
+  --outcome_col outcome_tcmr \
+  --model_dir ./model_directory \
+  --test_paths ./test_data.csv
+```
+
+### Predict risk scores
+
+#### ABMR prediction
+
+```bash
+python predict.py \
+  --outcome_col outcome_abmr \
+  --model_dir ./model_directory \
+  --test_paths ./sample_data.csv
+```
+
+#### TCMR prediction
+
+```bash
+python predict.py \
+  --outcome_col outcome_tcmr \
+  --model_dir ./model_directory \
+  --test_paths ./sample_data.csv
+```
+
+With default options, risk scores are written to `{type}_{outcome_col}_risk_scores.csv` in the current directory (`type` defaults to `unknown` unless you pass `--type` to match the tag used when training).
