@@ -21,7 +21,7 @@ Validate a cohort without contacting OpenRouter::
     python openrouter_runs.py --cohort geographic \
         --data-root /path/to/srtr_csvs --validate-only
 
-Run every reported model (``OPENROUTER_API_KEY`` must be set)::
+Run every reported model (prompts securely if ``OPENROUTER_API_KEY`` is unset)::
 
     python openrouter_runs.py --cohort geographic
 
