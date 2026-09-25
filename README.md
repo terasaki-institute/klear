@@ -12,6 +12,9 @@ The method combines XGBoost (tabular features and leaf indices), a PyTorch DNN, 
 | `KLEAR_development.py` | Train and evaluate models (Optuna tuning, CV, metrics and plots). |
 | `KLEAR_run.py` | Run inference on new data using a saved model directory. |
 | `KLEAR_evaluate_figures.py` | Extended evaluation: ROC/PR curves, confusion matrices, bootstrap metrics, decision curves, summary spreadsheet. |
+| `elastic_net_logistic_regression.py` | Train and evaluate the elastic-net logistic-regression baseline with Optuna and five-fold CV. |
+| `logistic_regression.py` | Train and evaluate the logistic-regression comparison model. |
+| `random_classifier.py` | Calculate prevalence-based random-classifier AUPRC, macro F1, and ROC-AUC baselines. |
 | `KLEAR_sample_dataset.csv` | Example input table. |
 | `KLEAR_ABMR_sample_output.csv` / `KLEAR_TCMR_sample_output.csv` | Example risk-score outputs. |
 | `dnn_run.py` | Run inference (with DNN only model) on new data using a saved model directory. |
