@@ -1,4 +1,5 @@
 import os
+import json
 import torch
 import numpy as np
 import pandas as pd
@@ -21,8 +22,6 @@ from tqdm import tqdm
 import seaborn as sns
 from sklearn.utils import resample
 from dcurves import dca, plot_graphs
-from sklearn.calibration import CalibratedClassifierCV
-from sklearn.base import BaseEstimator, ClassifierMixin
 import numpy as np
 
 # Set matplotlib to use the 'Agg' backend for non-interactive plotting
@@ -36,25 +35,6 @@ parser.add_argument('--outcome_col', type=str, default="outcome_tcmr",
 parser.add_argument('--type', type=str, default="unknown",
                     help="Type of model to differentiate, e.g., 'high_res', 'low_res', etc.")
 args = parser.parse_args()
-
-# === CALIBRATION FUNCTIONS ===
-class TorchWrapper(BaseEstimator, ClassifierMixin):
-    def __init__(self, pt_model):
-        # store both so clone() + your code will work
-        self.pt_model = pt_model
-        self.model    = pt_model
-    def fit(self, X, y=None):
-        # No-op fit for prefit mode
-        return self
-    
-    def predict_proba(self, X):
-        import torch
-        self.pt_model.eval()
-        with torch.no_grad():
-            X_tensor = torch.tensor(X, dtype=torch.float32)
-            logits   = self.pt_model(X_tensor)
-            probs    = torch.softmax(logits, dim=1).cpu().numpy()
-        return probs
 
 # === HELPER FUNCTIONS ===
 def net_benefit(y_true, y_pred_bin, p_t):
@@ -99,7 +79,7 @@ def stratified_bootstrap_indices(y, B=1000, seed=42):
     return stratified_samples
 
 
-def bootstrap_evaluation_on_test(model, X_test_combined, y_test, metric_fn, B=1000, seed=42):
+def bootstrap_evaluation_on_test(model, X_test_combined, y_test, metric_fn, B=1000, seed=42, threshold=0.5):
     """
     Evaluate model performance over B bootstrapped test sets.
     Returns mean, std, and 95% confidence interval for the given metric.
@@ -129,7 +109,7 @@ def bootstrap_evaluation_on_test(model, X_test_combined, y_test, metric_fn, B=10
             probs = predict_dnn(model, X_bs)
 
             if len(np.unique(y_bs)) == 2:
-                preds = (probs[:, 1] >= 0.5).astype(int)
+                preds = (probs[:, 1] >= threshold).astype(int)
             else:
                 preds = np.argmax(probs, axis=1)
 
@@ -212,7 +192,7 @@ def summarize_results(result_dir, dataset_name, outcome_name):
         for _, row in metadata.iterrows():
             key, val = row['Attribute'], row['Value']
             if key in ["train_path", "test_path"]:
-                val = os.path.basename(val)
+                continue  # Older run metadata may contain private absolute paths.
             dataset_info[key] = val
 
     # --- Train ROC AUC ---
@@ -290,17 +270,6 @@ def summarize_results(result_dir, dataset_name, outcome_name):
     summary_df.to_excel(output_path, index=False)
     print(f"✅ Summary saved to: {output_path}") 
 
-def find_best_threshold(y_true, y_probs):
-    fpr, tpr, thresholds = roc_curve(y_true, y_probs)
-    j_scores = tpr - fpr  # Youden's J statistic
-    best_idx = np.argmax(j_scores)
-    best_threshold = thresholds[best_idx]
-    
-    # Handle the case where the optimal threshold is 1.0, which can be problematic
-    if best_threshold >= 1.0:
-        return thresholds[best_idx - 1] if best_idx > 0 else 0.999
-
-    return best_threshold
 def flatten_leaf_indices(leaf_indices):
     """
     Reshapes the leaf indices output from XGBoost for multi-class models.
@@ -455,13 +424,14 @@ for TEST_PATH in TEST_PATHS:
     model.eval()
     print("✅ PyTorch DNN model loaded successfully.")
 
-    # === CALIBRATION ===
-    wrapped = TorchWrapper(model)
-    wrapped.classes_ = np.unique(y_test)     
-    wrapped.n_classes_ = len(wrapped.classes_)
-
-    calibrator = CalibratedClassifierCV(estimator=wrapped, method='sigmoid', cv="prefit")
-    calibrator.fit(X_test_combined, y_test)
+    policy_path = os.path.join(MODEL_DIR, f"{TYPE}_{OUTCOME_COL}_decision_policy.json")
+    with open(policy_path) as policy_file:
+        policy = json.load(policy_file)
+    if policy.get("threshold_source") != "selected_trial_development_oof" or \
+            policy.get("calibration_source") != "selected_trial_development_oof":
+        raise ValueError("Evaluation requires a policy fitted on development predictions")
+    best_threshold = float(policy["threshold"])
+    calibrator = joblib.load(os.path.join(MODEL_DIR, policy["calibration_artifact"]))
 
 
 
@@ -473,13 +443,11 @@ for TEST_PATH in TEST_PATHS:
         y_pred_probs_all = torch.nn.functional.softmax(y_pred_logits, dim=1).numpy()
         y_pred_probs = y_pred_probs_all[:, 1]
 
-        #calibrate the probabilities for the DCA
-        calibrator.fit(X_test_combined, y_test)          
-        y_pred_probs_cal = calibrator.predict_proba(X_test_combined)[:,1]
+        # Apply the frozen development calibrator for decision curves.
+        y_pred_probs_cal = calibrator.predict_proba(y_pred_probs.reshape(-1, 1))[:, 1]
 
 
-    # Use a standard 0.5 threshold for initial classification
-    best_threshold = find_best_threshold(y_test, y_pred_probs)
+    # Classify with the frozen development threshold.
     y_pred = (y_pred_probs >= best_threshold).astype(int)
     y_pred_class = (y_pred_probs >= 0.5).astype(int)  # For comparison with 0.5 threshold
 
@@ -566,7 +534,8 @@ for TEST_PATH in TEST_PATHS:
         # --- Bootstrap Evaluation ---
     def run_bootstrap(metric_fn, name):
         mean, std, (ci_lower, ci_upper) = bootstrap_evaluation_on_test(
-            model, X_test_combined, y_test, metric_fn, B=1000
+            model, X_test_combined, y_test, metric_fn, B=1000,
+            threshold=best_threshold
         )
         return {
             "metric": name,
@@ -593,17 +562,8 @@ for TEST_PATH in TEST_PATHS:
         preds_t = (y_pred_probs_cal >= t).astype(int)
         net_benefit_vals.append(net_benefit(y_test, preds_t, t))
 
-    best_idx    = np.argmax(net_benefit_vals)
-    best_thresh = treshholds[best_idx]
-    print(f"→ Max net-benefit at Pₜ = {best_thresh:.3f}, NB = {net_benefit_vals[best_idx]:.4f}")
-
-    #Scope of DCA
-    delta = 0.15
-    lower = max(0.0, best_thresh - delta)
-    upper = min(1.0, best_thresh + delta)
-
-    # New thresholds grid
-    zoom_ths = np.linspace(lower, upper, 50)
+    # Prespecified display grid; do not select a threshold from test outcomes.
+    zoom_ths = treshholds
 
     # Recompute net-benefit on that zoomed grid
     zoom_nb = [net_benefit(y_test, (y_pred_probs_cal>=t).astype(int), t) for t in zoom_ths]

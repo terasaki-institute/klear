@@ -1,6 +1,6 @@
-# A Hybrid Tree-Neural Framework for Pre-Transplant Risk Stratification of Acute Kidney Allograft Rejection Incorporating Unique High-Resolution Molecular Histocompatibility Dataset
+# KLEAR kidney transplant rejection prediction code
 
-Accompanying code for the NeurIPS submission.
+Accompanying code for the manuscript.
 
 The method combines XGBoost (tabular features and leaf indices), a PyTorch DNN, VAE + GMM oversampling for class imbalance, and focal loss. Supported outcomes include antibody-mediated rejection (ABMR), T-cell–mediated rejection (TCMR), pooled rejection, and multi-class Banff grades; see `KLEAR_development.py` for details.
 
@@ -14,10 +14,8 @@ The method combines XGBoost (tabular features and leaf indices), a PyTorch DNN, 
 | `KLEAR_run.py` | Run inference on new data using a saved model directory. |
 | `KLEAR_evaluate_figures.py` | Extended evaluation: ROC/PR curves, confusion matrices, bootstrap metrics, decision curves, summary spreadsheet. |
 | `elastic_net_logistic_regression.py` | Train and evaluate the elastic-net logistic-regression baseline with Optuna and five-fold CV. |
-| `logistic_regression.py` | Train and evaluate the logistic-regression comparison model. |
+| `logistic_regression.py` | Historical VAE/GMM + XGBoost-leaf logistic-head comparison; this is not plain logistic regression. |
 | `random_classifier.py` | Calculate prevalence-based random-classifier AUPRC, macro F1, and ROC-AUC baselines. |
-| `KLEAR_sample_dataset.csv` | Example input table. |
-| `KLEAR_ABMR_sample_output.csv` / `KLEAR_TCMR_sample_output.csv` | Example risk-score outputs. |
 | `LLMs/openrouter_runs.py` | Run or resume the reported OpenRouter benchmarks. |
 | `LLMs/clinicalbert_runs.py` | Train and evaluate the reported ClinicalBERT models. |
 
@@ -31,10 +29,9 @@ The method combines XGBoost (tabular features and leaf indices), a PyTorch DNN, 
 
 ---
 
-## Sample data
+## Input data
 
-- `KLEAR_sample_dataset.csv` — example features/outcomes for running the pipeline.
-- `KLEAR_ABMR_sample_output.csv` / `KLEAR_TCMR_sample_output.csv` — example predicted risk scores (probability of the positive class), in the range 0 (low risk) to 1 (high risk).
+Supply de-identified train and test CSVs through the command-line arguments. No patient-level data or trained checkpoints are distributed with this code.
 
 ---
 
@@ -47,6 +44,10 @@ Optional flags are supported by the scripts (for example `--output` and `--trial
 ### Train and develop models
 
 `--train_set` and `--test_set` each accept one or more CSV paths; paired lists must be the same length. By default, runs write under `results/` with subfolders derived from the train file path and outcome (see `KLEAR_development.py`).
+
+The current KLEAR training path does not use test labels for VAE or XGBoost stopping, calibration, or threshold selection. Optuna chooses fixed VAE/DNN epoch counts and XGBoost tree count using five-fold development CV. The selected model is then fitted on the **entire development CSV** with those fixed budgets; there is no additional 20% stopping split. Its binary threshold and sigmoid calibrator come from the selected trial's development out-of-fold predictions and are saved as decision-policy artifacts. `KLEAR_evaluate_figures.py` requires those artifacts and will not fit a calibrator or choose a threshold on test labels. The logistic-head and elastic-net scripts likewise freeze their binary thresholds from development out-of-fold predictions.
+
+Use a new output directory for these runs. The KLEAR and logistic-head scripts reject old Optuna studies created under a different training protocol. The selected trial's five-fold development score was also used for Optuna selection, so it is a descriptive tuning result rather than an independent performance estimate. The test labels are used only for evaluation metrics and plots after predictions and the decision policy are fixed. Precomputed molecular principal components require a separate fit-provenance audit; these scripts do not reconstruct PCA within folds.
 
 #### ABMR prediction
 
@@ -75,7 +76,7 @@ python KLEAR_development.py \
 python KLEAR_evaluate_figures.py \
   --outcome_col outcome_abmr \
   --model_dir ./model_directory \
-  --test_paths ./KLEAR_sample_dataset.csv
+  --test_paths ./test.csv
 ```
 
 #### TCMR prediction
@@ -84,7 +85,7 @@ python KLEAR_evaluate_figures.py \
 python KLEAR_evaluate_figures.py \
   --outcome_col outcome_tcmr \
   --model_dir ./model_directory \
-  --test_paths ./KLEAR_sample_dataset.csv
+  --test_paths ./test.csv
 ```
 
 ### Predict risk scores
@@ -95,7 +96,7 @@ python KLEAR_evaluate_figures.py \
 python KLEAR_run.py \
   --outcome_col outcome_abmr \
   --model_dir ./model_directory \
-  --test_paths ./KLEAR_sample_dataset.csv
+  --test_paths ./test.csv
 ```
 
 #### TCMR prediction
@@ -104,7 +105,7 @@ python KLEAR_run.py \
 python KLEAR_run.py \
   --outcome_col outcome_tcmr \
   --model_dir ./model_directory \
-  --test_paths ./KLEAR_sample_dataset.csv
+  --test_paths ./test.csv
 ```
 
 With default options, risk scores are written to `{type}_{outcome_col}_risk_scores.csv` in the current directory (`type` defaults to `unknown` unless you pass `--type` to match the tag used when training).

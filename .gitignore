@@ -1,0 +1,22 @@
+# Keep local data, model artifacts, and credentials out of code submissions.
+__pycache__/
+*.py[cod]
+.venv/
+.env
+.env.*
+
+*.csv
+*.xlsx
+*.parquet
+*.joblib
+*.pkl
+*.pt
+*.bin
+
+data/
+datasets/
+results/
+results_*/
+outputs/
+output_*/
+runs/

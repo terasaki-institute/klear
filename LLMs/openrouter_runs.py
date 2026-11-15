@@ -896,7 +896,6 @@ def write_run_metadata(
 ) -> None:
     metadata = {
         "cohort": args.cohort,
-        "eval_csv": str(eval_csv.resolve()),
         "eval_csv_sha256": sha256_file(eval_csv),
         "run_name": run_name,
         "requested_model_ids": models,

@@ -30,8 +30,8 @@ Pipeline Flow:
 Example:
   python elastic_net_logistic_regression.py \\
     --outcome_type outcome_abmr \\
-    --train_set datasets/mayo_sites_merged_highres_train.csv \\
-    --test_set datasets/ABMR_TEST.csv \\
+    --train_set ./train.csv \\
+    --test_set ./test.csv \\
     --output results_elasticnet_logreg \\
     --trials 200
 """
@@ -41,6 +41,7 @@ import argparse
 import warnings
 import random
 import os
+import json
 from datetime import datetime
 
 # Data Science
@@ -266,7 +267,11 @@ def find_best_threshold(y_true, probs, rejection_positive_class=1):
         best_threshold = thresholds[best_idx] if best_idx < len(thresholds) else 0.5
         return float(best_threshold), "F1-optimal"
     fpr, tpr, thresholds = roc_curve(y_true, probs)
-    j_scores = tpr - fpr
+    finite = np.isfinite(thresholds)
+    thresholds = thresholds[finite]
+    j_scores = (tpr - fpr)[finite]
+    if not len(thresholds):
+        return 0.5, "Youden"
     best_idx = np.argmax(j_scores)
     best_threshold = thresholds[best_idx] if best_idx < len(thresholds) else 0.5
     return float(best_threshold), "Youden"
@@ -292,7 +297,7 @@ def stratified_bootstrap_indices(y, B=1000, seed=42):
     return samples
 
 
-def bootstrap_evaluation_on_test(model, X_test_combined, y_test, metric_fn, B=1000, seed=42):
+def bootstrap_evaluation_on_test(model, X_test_combined, y_test, metric_fn, B=1000, seed=42, threshold=0.5):
     np.random.seed(seed)
     stratified_indices = stratified_bootstrap_indices(y_test, B, seed)
     metrics = []
@@ -305,7 +310,7 @@ def bootstrap_evaluation_on_test(model, X_test_combined, y_test, metric_fn, B=10
                 raise ValueError("Only one class present")
             probs = model.predict_proba(X_bs)
             if y_count == 2:
-                preds = (probs[:, 1] >= 0.5).astype(int)
+                preds = (probs[:, 1] >= threshold).astype(int)
             else:
                 preds = np.argmax(probs, axis=1)
             if metric_fn.__name__ == "roc_auc_score":
@@ -647,8 +652,16 @@ def evaluate_best_trial_on_test(
     )
 
     if y_count == 2:
-        best_threshold, method = find_best_threshold(y_test, test_probs[:, 1])
-        print(f"Best Threshold Chosen ({method}): {best_threshold:.4f}")
+        oof_labels = np.asarray(best_trial.user_attrs["val_labels"], dtype=int)
+        oof_probs = np.asarray(best_trial.user_attrs["val_probs"], dtype=float)[:, 1]
+        if len(oof_labels) != len(y) or not np.array_equal(oof_labels, np.asarray(y)):
+            raise ValueError("Best-trial OOF labels do not match development data")
+        best_threshold, method = find_best_threshold(oof_labels, oof_probs)
+        print(f"Frozen development threshold ({method}): {best_threshold:.4f}")
+        with open(os.path.join(RESULT_DIR, f"{DATASET_NAME}_{OUTCOME_NAME}_decision_policy.json"), "w") as policy_file:
+            json.dump({"threshold": float(best_threshold), "threshold_method": method,
+                       "threshold_source": "selected_trial_development_oof",
+                       "development_samples": int(len(y))}, policy_file, indent=2)
         test_preds = (test_probs[:, 1] >= best_threshold).astype(int)
     else:
         best_threshold = None
@@ -781,7 +794,8 @@ def evaluate_best_trial_on_test(
     # Bootstrap
     def run_bootstrap(metric_fn, name):
         mean, std, (ci_lower, ci_upper) = bootstrap_evaluation_on_test(
-            model, X_test_pre, y_test, metric_fn, B=1000
+            model, X_test_pre, y_test, metric_fn, B=1000,
+            threshold=best_threshold if best_threshold is not None else 0.5
         )
         return {
             "metric": name,
@@ -1013,11 +1027,15 @@ if __name__ == "__main__":
             study = optuna.create_study(direction="maximize")
             print("Created new Optuna study.")
 
-        study.optimize(
-            lambda trial: objective(trial, RESULT_DIR),
-            n_trials=num_trials,
-            show_progress_bar=True,
-        )
+        remaining_trials = num_trials - len(study.trials)
+        if remaining_trials < 0:
+            raise ValueError("Existing study has more trials than the requested budget")
+        if remaining_trials:
+            study.optimize(
+                lambda trial: objective(trial, RESULT_DIR),
+                n_trials=remaining_trials,
+                show_progress_bar=True,
+            )
 
         print("Saving results to:", RESULT_DIR)
         joblib.dump(study, study_path)
