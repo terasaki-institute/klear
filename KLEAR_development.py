@@ -37,6 +37,7 @@ import random
 import os 
 from tqdm import tqdm # timer bar 
 import copy
+import json
 
 # Data Science 
 import numpy as np
@@ -70,6 +71,7 @@ from sklearn.metrics import (
     average_precision_score
 )
 from sklearn.pipeline import Pipeline
+from sklearn.linear_model import LogisticRegression
 from sklearn.mixture import GaussianMixture 
 from sklearn.utils import resample
 
@@ -270,7 +272,9 @@ def train_dnn(model, optimizer, criterion, train_loader, val_loader, epochs, pat
     best_model_state = None
     
     # Learning rate scheduler: Reduces LR when validation loss plateaus
-    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min', factor=0.1, patience=patience//2)
+    scheduler = (torch.optim.lr_scheduler.ReduceLROnPlateau(
+        optimizer, 'min', factor=0.1, patience=patience//2)
+        if val_loader is not None else None)
 
     for epoch in range(epochs):
         # --- Training Phase ---
@@ -289,6 +293,12 @@ def train_dnn(model, optimizer, criterion, train_loader, val_loader, epochs, pat
             running_loss += loss.item()
         
         avg_train_loss = running_loss / len(train_loader)
+
+        # With no separate stopping cohort, use the trial's fixed epoch budget.
+        # Validation labels must never influence a model scored on those rows.
+        if val_loader is None:
+            print(f"Epoch {epoch+1}/{epochs} | Train Loss: {avg_train_loss:.4f}")
+            continue
 
         # --- Validation Phase ---
         model.eval()
@@ -320,7 +330,7 @@ def train_dnn(model, optimizer, criterion, train_loader, val_loader, epochs, pat
         # --- Learning Rate Scheduler Step ---
         scheduler.step(avg_val_loss)
         
-    # Load the best model state before returning
+    # Load the best validation state only when a separate stopping set exists.
     if best_model_state:
         model.load_state_dict(best_model_state)
         
@@ -465,7 +475,7 @@ def vae_gmm_oversample(
 ):
     """
     X_train, y_train:  training set
-    X_val,   y_val:    your held-out validation set
+    X_val,   y_val:    optional separate stopping set; None uses fixed epochs
     """
     # 1) Separate minority vs majority in TRAIN
     X_min = X_train[y_train == minority_class]
@@ -482,11 +492,15 @@ def vae_gmm_oversample(
     train_ds = TensorDataset(tensor_min)
     train_loader = DataLoader(train_ds, batch_size=32, shuffle=True)
 
-    # filter minority examples out of your provided validation set
-    X_val_min = X_val[y_val == minority_class]
-    tensor_val = torch.tensor(X_val_min, dtype=torch.float32, device=device)
-    val_ds = TensorDataset(tensor_val)
-    val_loader = DataLoader(val_ds, batch_size=32, shuffle=False)
+    if (X_val is None) != (y_val is None):
+        raise ValueError("VAE stopping features and labels must both be supplied or both be None")
+    val_loader = None
+    if X_val is not None:
+        X_val_min = X_val[y_val == minority_class]
+        if len(X_val_min) == 0:
+            raise ValueError("VAE stopping set has no minority-class examples")
+        tensor_val = torch.tensor(X_val_min, dtype=torch.float32, device=device)
+        val_loader = DataLoader(TensorDataset(tensor_val), batch_size=32, shuffle=False)
 
     # 3) VAE + EarlyStopping setup
     vae_model = TabularVAE(
@@ -523,7 +537,10 @@ def vae_gmm_oversample(
             loss.backward()
             optimizer.step()
 
-        # validation pass
+        if val_loader is None:
+            continue
+
+        # Validation pass, only when an independent stopping set is supplied.
         vae_model.eval()
         val_loss = 0.0
         with torch.no_grad():
@@ -598,7 +615,7 @@ def stratified_bootstrap_indices(y, B=1000, seed=42):
     return stratified_samples
 
 
-def bootstrap_evaluation_on_test(model, X_test_combined, y_test, metric_fn, B=1000, seed=42):
+def bootstrap_evaluation_on_test(model, X_test_combined, y_test, metric_fn, B=1000, seed=42, threshold=0.5):
     """
     Evaluate model performance over B bootstrapped test sets.
     Returns mean, std, and 95% confidence interval for the given metric.
@@ -628,7 +645,7 @@ def bootstrap_evaluation_on_test(model, X_test_combined, y_test, metric_fn, B=10
             probs = predict_dnn(model, X_bs)
 
             if y_count == 2:
-                preds = (probs[:, 1] >= 0.5).astype(int)
+                preds = (probs[:, 1] >= threshold).astype(int)
             else:
                 preds = np.argmax(probs, axis=1)
 
@@ -682,8 +699,7 @@ def bootstrap_evaluation_on_test(model, X_test_combined, y_test, metric_fn, B=10
 # 4.1 Objective Function with Strict 5-Fold CV 
 # ---------------------------------------------------------------------
 def objective(trial, result_dir): 
-    
-    global X_test 
+
     # Print trial progress 
     print(f"\n Running Trial {trial.number + 1}/{num_trials}...") 
 
@@ -693,20 +709,17 @@ def objective(trial, result_dir):
     xgb_learning_rate = trial.suggest_float("xgb_learning_rate", 0.001, 0.3, log=True)
     xgb_subsample = trial.suggest_float("xgb_subsample", 0.5, 1.0)
     xgb_reg_lambda = trial.suggest_float("xgb_reg_lambda", 0.01, 10.0, log=True)
-    xgb_early_stopping_rounds = trial.suggest_int("xgb_early_stopping_rounds", 2, 10, step=2)
     dnn_lr = trial.suggest_float("dnn_lr", 1e-5, 1e-2, log=True)
     dnn_l2_regularizer = trial.suggest_float("dnn_l2_regularizer", 1e-6, 1e-2, log=True)
     dnn_num_neurons = trial.suggest_int("dnn_num_neurons", 32, 256, step=32)
     dnn_epoch = trial.suggest_int("dnn_epoch", 20, 40, step=10)
     dnn_dropout_rate = trial.suggest_float("dnn_dropout_rate", 0.1, 0.6, step=0.1)
     batch_size = trial.suggest_categorical("dnn_batch_size", [32, 64, 128])
-    dnn_early_stopping_rounds = trial.suggest_int("dnn_early_stopping_rounds", 1, 5, step=1)
 
     vae_latent_dim = trial.suggest_int("vae_latent_dim", 4, 16, step=4)
     vae_hidden_dim = trial.suggest_int("vae_hidden_dim", 32, 128, step=32)
     vae_lr         = trial.suggest_float("vae_lr", 1e-4, 1e-2, log=True)
     vae_epochs     = trial.suggest_int("vae_epochs", 50, 200, step=50)
-    vae_early_stopping_rounds = trial.suggest_int("vae_early_stopping_rounds", 2, 10, step=2)
     gmm_n_components = trial.suggest_int("gmm_n_components", 2, 12, step=1)
 
     # --- Tracking objects ---
@@ -830,56 +843,6 @@ def objective(trial, result_dir):
         X_val_fold_pre   = np.nan_to_num(X_val_fold_pre).astype(float)
         
         # ------------------------------
-        # Preprocess the Test Set 
-        # ------------------------------
-        
-        # Ensure test has all numeric and categorical columns 
-        missing_numeric = set(numeric_features) - set(X_test.columns)
-        for col in missing_numeric: 
-            X_test[col] = 0 # Fill missing numeric columns with 0 
-        
-        if len(categorical_features) > 0:
-            missing_categorical = set(categorical_features) - set(X_test.columns)
-            for col in missing_categorical:
-                X_test[col] = "missing" # Fill missing categorical columns with a placeholder 
-
-        # Reorder numeric columns to match training 
-        X_test_numeric = numeric_transformer.transform(X_test[numeric_features])
-
-        # Reorder categorical columns to match training 
-        if len(categorical_features) > 0:
-            X_test_cat = pd.DataFrame(cat_imputer.transform(X_test[categorical_features]), columns = categorical_features)
-            
-            # Apply encoders (TargetEncoder + OneHotEncoder)
-            if len(high_card_cols) > 0:
-                X_test_high = te.transform(X_test_cat[high_card_cols])  # Target encoded high-cardinality 
-            else:
-                X_test_high = np.empty((X_test.shape[0], 0))
-                
-            if len(low_card_cols) > 0:
-                X_test_low = X_test_cat[low_card_cols]                  # Low-cardinality categorical columnns 
-                X_test_low_ohe = pd.get_dummies(X_test_low, drop_first=True) # One-hot encode 
-                
-                # Align one-hot encoded columns with training 
-                X_test_low_ohe = X_test_low_ohe.reindex(columns=train_ohe_cols, fill_value=0)
-            else:
-                X_test_low_ohe = pd.DataFrame()
-        else:
-            X_test_high = np.empty((X_test.shape[0], 0))
-            X_test_low_ohe = pd.DataFrame()
- 
-        # Final assembled test matrix 
-        if len(categorical_features) > 0:
-            X_test_pre = np.hstack([ 
-                X_test_numeric,
-                X_test_high.values,
-                X_test_low_ohe.values
-            ]) 
-        else:
-            X_test_pre = X_test_numeric
-        X_test_pre = np.nan_to_num(X_test_pre).astype(float)
-        
-        # ------------------------------
         # (B) Apply VAE + GMM Oversampling
         # ------------------------------
         # this is applied within each fold to oversample the minority class in the training set 
@@ -894,8 +857,8 @@ def objective(trial, result_dir):
             X_res, y_res = vae_gmm_oversample(
                 X_train_fold_pre,
                 y_train_fold,
-                X_val_fold_pre,
-                y_val_fold,
+                None,
+                None,
                 minority_class=minority_class,
                 vae_latent_dim=vae_latent_dim,
                 vae_hidden_dim=vae_hidden_dim,
@@ -903,7 +866,6 @@ def objective(trial, result_dir):
                 vae_epochs=vae_epochs,
                 gmm_n_components=gmm_n_components,
                 device='cpu', # changed from cuda to cpu,
-                patience=vae_early_stopping_rounds,
             )
         # ------------------------------
         # (C) Train XGBoost + Extract Feature Importance
@@ -922,11 +884,10 @@ def objective(trial, result_dir):
             reg_lambda=xgb_reg_lambda,
             use_label_encoder=False,
             eval_metric='mlogloss',
-            early_stopping_rounds=xgb_early_stopping_rounds,
             # scale_pos_weight=scale_pos_weight_val, 
             random_state=SEED
         )
-        xgb_model.fit(X_res, y_res, eval_set=[(X_val_fold_pre, y_val_fold)], verbose=False)
+        xgb_model.fit(X_res, y_res, verbose=False)
 
         booster = xgb_model.get_booster()
         feature_importances_norm = xgb_model.feature_importances_
@@ -1008,14 +969,9 @@ def objective(trial, result_dir):
             torch.tensor(X_train_combined, dtype=torch.float32),
             torch.tensor(y_res, dtype=torch.long)
         )
-        val_dataset = TensorDataset(
-            torch.tensor(X_val_combined, dtype=torch.float32),
-            torch.tensor(y_val_fold, dtype=torch.long) 
-        )
         train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
-        val_loader   = DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
 
-        train_dnn(model, optimizer, criterion, train_loader, val_loader, epochs=dnn_epoch, patience=dnn_early_stopping_rounds)
+        train_dnn(model, optimizer, criterion, train_loader, None, epochs=dnn_epoch)
         
         # ------------------------------
         # (E) Predict on Validation Fold
@@ -1145,7 +1101,11 @@ def find_best_threshold(y_true, probs, rejection_positive_class=1):
     else:
         # Use Youden's J statistic
         fpr, tpr, thresholds = roc_curve(y_true, probs)
-        j_scores = tpr - fpr
+        finite = np.isfinite(thresholds)
+        thresholds = thresholds[finite]
+        j_scores = (tpr - fpr)[finite]
+        if not len(thresholds):
+            return 0.5, "Youden"
         best_idx = np.argmax(j_scores)
         best_threshold = thresholds[best_idx] if best_idx < len(thresholds) else 0.5
         return best_threshold, "Youden"
@@ -1488,15 +1448,14 @@ def evaluate_best_trial_on_test(best_trial, RESULT_DIR, X, y, X_test, y_test, nu
     mc.remove(0)
     for minority_class in mc: 
         X_res, y_res = vae_gmm_oversample(
-            X_res, y_res, X_test_pre, y_test,
-             minority_class=minority_class,
+            X_res, y_res, None, None,
+            minority_class=minority_class,
             vae_latent_dim=params['vae_latent_dim'],
             vae_hidden_dim=params['vae_hidden_dim'],
             vae_lr=params['vae_lr'],
             vae_epochs=params['vae_epochs'],
             gmm_n_components=params['gmm_n_components'],
             device='cpu',  # Use CPU for final training
-            patience=params['vae_early_stopping_rounds']
         )
 
     # XGBoost
@@ -1512,11 +1471,10 @@ def evaluate_best_trial_on_test(best_trial, RESULT_DIR, X, y, X_test, y_test, nu
         reg_lambda=params["xgb_reg_lambda"],
         use_label_encoder=False,
         eval_metric='mlogloss',
-        early_stopping_rounds=params["xgb_early_stopping_rounds"],
         # scale_pos_weight=scale_pos_weight_val, 
         random_state=SEED
     )
-    xgb_model.fit(X_res, y_res, eval_set=[(X_test_pre, y_test)], verbose=False)
+    xgb_model.fit(X_res, y_res, verbose=False)
 
     # Save the XGBoost model
     xgb_model.save_model(XGB_SAVE_PATH)
@@ -1551,13 +1509,12 @@ def evaluate_best_trial_on_test(best_trial, RESULT_DIR, X, y, X_test, y_test, nu
         torch.tensor(y_res, dtype=torch.long)
     )
     train_loader = DataLoader(train_dataset, batch_size=params["dnn_batch_size"], shuffle=True)
-    val_loader = DataLoader(train_dataset, batch_size=params["dnn_batch_size"], shuffle=False)  # Dummy val
     
     # Enable clean DNN loss printout for final best trial
     globals()["PRINT_VAE_LOSS"] = True
     globals()["PRINT_DNN_LOSS"] = True 
 
-    train_dnn(model, optimizer, criterion, train_loader, val_loader, epochs=params["dnn_epoch"], patience=params["dnn_early_stopping_rounds"])
+    train_dnn(model, optimizer, criterion, train_loader, None, epochs=params["dnn_epoch"])
         
     test_probs = predict_dnn(model, X_test_combined) 
     
@@ -1609,10 +1566,28 @@ def evaluate_best_trial_on_test(best_trial, RESULT_DIR, X, y, X_test, y_test, nu
         os.path.join(RESULT_DIR, f"{DATASET_NAME}_{OUTCOME_NAME}_train_auc_real.csv"), index=False
     )
 
-    # --- Decide Best Threshold for Binary (Youden vs F1) ---
+    # Freeze threshold and sigmoid calibration from development OOF scores.
+    # The test labels are used only below for evaluation metrics.
     if y_count == 2:
-        best_threshold, method = find_best_threshold(y_test, test_probs[:, 1])
-        print(f"Best Threshold Chosen ({method}): {best_threshold:.4f}")
+        oof_labels = np.asarray(best_trial.user_attrs["val_labels"], dtype=int)
+        oof_probs = np.asarray(best_trial.user_attrs["val_probs"], dtype=float)[:, 1]
+        if len(oof_labels) != len(y) or not np.array_equal(oof_labels, np.asarray(y)):
+            raise ValueError("Best-trial OOF labels do not match the development cohort")
+        best_threshold, method = find_best_threshold(oof_labels, oof_probs)
+        calibrator = LogisticRegression(solver="lbfgs", random_state=SEED)
+        calibrator.fit(oof_probs.reshape(-1, 1), oof_labels)
+        prefix = f"{DATASET_NAME}_{OUTCOME_NAME}"
+        calibrator_file = f"{prefix}_development_calibrator.joblib"
+        joblib.dump(calibrator, os.path.join(RESULT_DIR, calibrator_file))
+        with open(os.path.join(RESULT_DIR, f"{prefix}_decision_policy.json"), "w") as policy_file:
+            json.dump({"threshold": float(best_threshold), "threshold_method": method,
+                       "threshold_score": "raw_positive_class_probability",
+                       "threshold_source": "selected_trial_development_oof",
+                       "calibration_source": "selected_trial_development_oof",
+                       "calibration_artifact": calibrator_file,
+                       "training_budget_source": "optuna_selected_fixed_epochs_and_trees",
+                       "development_samples": int(len(y))}, policy_file, indent=2)
+        print(f"Frozen development threshold ({method}): {best_threshold:.4f}")
     else:
         # Multiclass → ignore thresholds; always use argmax
         best_threshold = None
@@ -1654,20 +1629,7 @@ def evaluate_best_trial_on_test(best_trial, RESULT_DIR, X, y, X_test, y_test, nu
         precision = recall = thresholds = None  # (optional: skip plotting for multiclass)
         auprc = average_precision_score(y_test, test_probs, average="macro")
 
-    # precision, recall, thresholds = precision_recall_curve(y_test, test_probs[:, 1])
-    # auprc = average_precision_score(y_test, test_probs[:, 1])
-    
     print(f"AUPRC (Average Precision): {auprc:.4f}") 
-
-    # # --- Decide Best Threshold for Binary (Youden vs F1) ---
-    # if y_count == 2:
-    #     best_threshold, method = find_best_threshold(y_test, test_probs[:, 1])
-    #     print(f"Best Threshold Chosen ({method}): {best_threshold:.4f}")
-    # else:
-    #     # Multiclass → ignore thresholds; always use argmax
-    #     best_threshold = None
-    #     method = "Argmax (Multiclass)"
-    #     print(f"Multiclass outcome — predictions will use {method}.")
 
 
     # Save metrics 
@@ -1794,7 +1756,8 @@ def evaluate_best_trial_on_test(best_trial, RESULT_DIR, X, y, X_test, y_test, nu
     # --- Bootstrap Evaluation ---
     def run_bootstrap(metric_fn, name):
         mean, std, (ci_lower, ci_upper) = bootstrap_evaluation_on_test(
-            model, X_test_combined, y_test, metric_fn, B=1000
+            model, X_test_combined, y_test, metric_fn, B=1000,
+            threshold=best_threshold if best_threshold is not None else 0.5
         )
         return {
             "metric": name,
@@ -1922,6 +1885,19 @@ if __name__ == "__main__":
         # Path to save/reload study
         study_path = os.path.join(RESULT_DIR, "optuna_study.pkl")
 
+        protocol_path = os.path.join(RESULT_DIR, "training_protocol.json")
+        protocol = {"version": "development_only_fixed_budget_v1",
+                    "stopping": "fixed Optuna-selected epochs and trees; no test labels",
+                    "threshold_and_calibration": "selected-trial development OOF"}
+        if os.path.exists(study_path):
+            if not os.path.exists(protocol_path):
+                raise ValueError("Existing study used another training protocol; choose a new output directory")
+            with open(protocol_path) as protocol_file:
+                if json.load(protocol_file) != protocol:
+                    raise ValueError("Existing study used another training protocol; choose a new output directory")
+        with open(protocol_path, "w") as protocol_file:
+            json.dump(protocol, protocol_file, indent=2)
+
         # Check if study already exists and load it if it does
         if os.path.exists(study_path):
             study = joblib.load(study_path)
@@ -1931,12 +1907,15 @@ if __name__ == "__main__":
             print("Created new Optuna study.")
 
         # Run trials 
-        study.optimize(
-            lambda trial: objective(trial, RESULT_DIR),
-            n_trials=num_trials,
-            show_progress_bar=True,
-            # callbacks=[callback_plot_roc_cm]
-        ) 
+        remaining_trials = num_trials - len(study.trials)
+        if remaining_trials < 0:
+            raise ValueError("Existing study has more trials than the requested budget")
+        if remaining_trials:
+            study.optimize(
+                lambda trial: objective(trial, RESULT_DIR),
+                n_trials=remaining_trials,
+                show_progress_bar=True,
+            )
         
         print("Saving results to:", RESULT_DIR) 
 
@@ -1957,7 +1936,7 @@ if __name__ == "__main__":
         if len(numeric_features) == 0:
             raise ValueError("No numeric features found in test set. Please inspect column types.")
         '''
-        # evaluate_best_trial_on_test(study.best_trial, RESULT_DIR, X, y, X_test, y_test, numeric_features, categorical_features)
+        evaluate_best_trial_on_test(study.best_trial, RESULT_DIR, X, y, X_test, y_test, numeric_features, categorical_features)
 
         print("\n--- Best Trial ---")
         print(f"  Number: {study.best_trial.number}")
