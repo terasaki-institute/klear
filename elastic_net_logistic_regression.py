@@ -30,8 +30,8 @@ Pipeline Flow:
 Example:
   python elastic_net_logistic_regression.py \\
     --outcome_type outcome_abmr \\
-    --train_set datasets/mayo_sites_merged_highres_train.csv \\
-    --test_set datasets/ABMR_TEST.csv \\
+    --train_set ./train.csv \\
+    --test_set ./test.csv \\
     --output results_elasticnet_logreg \\
     --trials 200
 """

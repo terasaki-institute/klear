@@ -18,7 +18,7 @@ Install the runtime dependencies with Python 3.10 or newer::
 Validate the reported high-resolution Mayo cohort::
 
     python clinicalbert_runs.py --dataset high_res --outcome outcome_tcmr \
-        --data-root /path/to/cohort_csvs --validate-only
+        --data-root ./cohort_csvs --validate-only
 
 Train the reported geographic SRTR model::
 
@@ -27,7 +27,7 @@ Train the reported geographic SRTR model::
 Evaluate an existing checkpoint without retraining::
 
     python clinicalbert_runs.py --dataset srtr_geographic \
-        --output-dir /path/to/existing/run --evaluate-only
+        --output-dir ./existing_run --evaluate-only
 
 The spreadsheet's thresholded ClinicalBERT metrics chose an F1-optimal
 threshold on the evaluation cohort.  ``--threshold-source evaluation`` remains
@@ -874,8 +874,6 @@ def write_run_config(
         "requested_outcome": args.outcome,
         "effective_outcome": "outcome_rej" if source == "srtr" else args.outcome,
         "label_column": label_column,
-        "train_csv": str(train_csv.resolve()),
-        "test_csv": str(test_csv.resolve()),
         "train_csv_sha256": sha256_file(train_csv),
         "test_csv_sha256": sha256_file(test_csv),
         "n_train_split": train_count,

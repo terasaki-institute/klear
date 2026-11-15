@@ -39,12 +39,12 @@ Closed-form (binary, positive prevalence P = n_pos / n):
 Usage
 -----
   python random_classifier.py ^
-    --data datasets/mayo_sites_merged_highres_train.csv ^
+    --data ./train.csv ^
     --outcome_col outcome_tcmr ^
     --output random_baselines_tcmr.csv
 
   python random_classifier.py ^
-    --data datasets/mayo_sites_merged_highres_train.csv ^
+    --data ./train.csv ^
     --outcome_col outcome_abmr ^
     --positive_count 12 --n_total 319   # optional: force Table 1 counts
 """

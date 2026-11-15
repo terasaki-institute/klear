@@ -109,97 +109,9 @@ global_num_trials = None
 global_fixed_feature_names = None  
  
 # ==============================================================================
-# 1. Dataset Configuration and Loading 
+# 1. Dataset Configuration and Loading
 # ==============================================================================
-"""
-DATASET_NAME = "imputed"  # "imputed" or "low_res" or "high_res" 
-OUTCOME_NAME = "outcome_tcmr"  
- 
-# Set paths based on dataset type 
-if DATASET_NAME == "imputed":  
-    train_path = "/Users/aaryamecwan/Dropbox/Aarya/MS_Mayo_cor/data/mayo_datasets_03112025/Imputed HLA datasets/mayo_sites_merged_imputed_train.csv"
-    test_path = "/Users/aaryamecwan/Dropbox/Aarya/MS_Mayo_cor/data/shared_datasets/lowres_imputed_test_imputed.csv" 
- 
-elif DATASET_NAME == "low_res":  
-    # PC/Dropbox 
-    train_path = "/Users/aaryamecwan/Dropbox/Aarya/MS_Mayo_cor/data/mayo_datasets_03112025/Low-res HLA datasets/mayo_sites_merged_lowres_train.csv"
-    test_path = "/Users/aaryamecwan/Dropbox/Aarya/MS_Mayo_cor/data/shared_datasets/lowres_highres_test_lowres.csv" 
-    # HPC 
-    # train_path = "/mnt/md0/Public/ms_mayo_cor/data/mayo_datasets_03112025/Low-res HLA datasets/mayo_sites_merged_lowres_train.csv"
-    # test_path  = "/mnt/md0/Public/ms_mayo_cor/data/shared_datasets/lowres_highres_test_lowres.csv"
-
-elif DATASET_NAME == "high_res":   
-    # PC/Dropbox 
-    train_path = "/Users/aaryamecwan/Dropbox/Aarya/MS_Mayo_cor/data/mayo_datasets_03112025/High-res HLA datasets/mayo_sites_merged_highres_train.csv"
-    test_path  = "/Users/aaryamecwan/Dropbox/Aarya/MS_Mayo_cor/data/shared_datasets/lowres_highres_test_highres.csv" 
-    # HPC 
-    # train_path = "/mnt/md0/Public/ms_mayo_cor/data/mayo_datasets_03112025/High-res HLA datasets/mayo_sites_merged_highres_train.csv"
-    # test_path  = "/mnt/md0/Public/ms_mayo_cor/data/shared_datasets/lowres_highres_test_highres.csv"
-  
-#TOP PERCENT DATASET
-if DATASET_PERCENT == "75":
-    columns_to_keep = ['don_race', 'don_ethnicity', 'prev_kt', 'don_abo', 'rec_race', 'thymo_ind', 'pc12_tcmr', 'abo', 'pc11', 
-                       'pc10_tcmr', 'end_cpra', 'pc3_tcmr', 'rec_age', 'cmv', 'cmv_mm', 'pc6_tcmr', 'kdpi', 'pc13_tcmr', 'pc1_tcmr']
-elif DATASET_PERCENT == "90":
-    columns_to_keep = ['don_race', 'don_ethnicity', 'prev_kt', 'don_abo', 'rec_race', 'thymo_ind', 'pc12_tcmr', 'abo', 'pc11']
-print("\nDataset: ", DATASET_NAME)   
-print("Outcome: ", OUTCOME_NAME)   
- 
-# Output directory 
-# RESULT_DIR = f"/mnt/md0/Public/ms_mayo_cor/results/{DATASET_NAME}/{OUTCOME_NAME}" 
-# RESULT_DIR = f"/home/aaryamecwan/results/{DATASET_NAME}_{OUTCOME_NAME}"
-RESULT_DIR = f"results/{DATASET_NAME}/{OUTCOME_NAME}"
-os.makedirs(RESULT_DIR, exist_ok=True)
-     
-# ------------------------------------------------------------------------------
-# Dataset Loading and Preprocessing
-# ------------------------------------------------------------------------------
-
-# Load Train Data 
-data = pd.read_csv(train_path) 
-# data = pd.read_csv("/Users/aaryamecwan/Dropbox/Aarya/MS_Mayo_cor/data/mayo_datasets_03112025/Low-res HLA datasets/mayo_sites_merged_lowres_train.csv")
-
-# Define outcome column to predict 
-outcome_col = OUTCOME_NAME
-
-# Extract labels  
-y_original = data[outcome_col]  
-label_encoder = LabelEncoder() 
-y = label_encoder.fit_transform(y_original)
-y_count  = len(set(y)) 
-
-# Drop target + other outcomes from training features 
-if DATASET_PERCENT == "75" or DATASET_PERCENT == "90":
-    X = data[columns_to_keep]
-else:
-    drop_cols = ["outcome_tcmr", "outcome_banff", "outcome_abmr", "outcome_rej", "pid"] 
-    X = data.drop(columns=drop_cols, errors="ignore") 
-
-# Load Test Data 
-test_data = pd.read_csv(test_path)  
-y_test_original = test_data[outcome_col]
-y_test = label_encoder.transform(y_test_original) 
-if DATASET_PERCENT == "75" or DATASET_PERCENT == "90":
-    X_test = test_data[columns_to_keep]
-else:
-    X_test = test_data.drop(columns=drop_cols, errors="ignore")
-
-
-# Identify numeric and categorical features
-numeric_features = [col for col in X.columns if X[col].dtype in ["int64", "float64"]]
-categorical_features = [col for col in X.columns if X[col].dtype in ["object", "category"]]
-
-# Print class distribution
-unique_classes, class_counts = np.unique(y, return_counts=True)
-print("\nClass Distribution:")
-for cls, count in zip(unique_classes, class_counts):
-    label = f"Class {cls}" if y_count > 2 else ("No Rejection" if cls == 0 else "Rejection")
-    print(f"{label}: {count} samples") 
-
-print(f"\nTrain set: {X.shape[0]} samples, {X.shape[1]} engineering features")
-print(f"Test set: {X_test.shape[0]} samples, {X_test.shape[1]} engineered features") 
-
-"""
+# Input CSVs are supplied through the command-line arguments in main().
 
 # ==============================================================================
 # 2. Model Components
@@ -1802,8 +1714,6 @@ if __name__ == "__main__":
     
     train_array = args.train_set
     test_array = args.test_set
-    print(train_array)
-    print(test_array)
     if len(train_array) != len(test_array):
         raise ValueError("Training and testing datasets must have the same number of paths.")
     
@@ -1873,8 +1783,6 @@ if __name__ == "__main__":
         metadata = {
             "dataset_name": DATASET_NAME,
             "outcome": OUTCOME_NAME,
-            "train_path": train_path,
-            "test_path": test_path,
             "num_train_samples": X.shape[0],
             "num_test_samples": X_test.shape[0],
             "num_features": X.shape[1]

@@ -192,7 +192,7 @@ def summarize_results(result_dir, dataset_name, outcome_name):
         for _, row in metadata.iterrows():
             key, val = row['Attribute'], row['Value']
             if key in ["train_path", "test_path"]:
-                val = os.path.basename(val)
+                continue  # Older run metadata may contain private absolute paths.
             dataset_info[key] = val
 
     # --- Train ROC AUC ---
